@@ -370,6 +370,13 @@ reads the existing record directly and does not create storage on a missing
 read; existing `get_locked()` and `get_locked_at()` views remain available for
 backward compatibility.
 
+The read-only `preview_release_to_issuer(invoice_id, issuer)` view returns a
+`(u128, bool)` pair containing the active locked amount and whether the
+proposed recipient passes the structural checks used by `release_to_issuer`.
+It reads the existing `Locked` record and instance configuration only; it does
+not authorize, transfer funds, extend TTLs, or create storage. A missing lock
+returns `(0, false)`. The view does not change the `EscrowRecord` schema.
+
 #### History Entry
 
 | DataKey | Type | Description |

@@ -364,6 +364,86 @@ impl EscrowContract {
         true
     }
 
+    fn release_recipient_is_valid(
+        env: &Env,
+        pool: &Address,
+        usdc: &Address,
+        issuer: &Address,
+        recorded_issuer: &Address,
+    ) -> bool {
+        if issuer == &env.current_contract_address() || issuer == pool || issuer == usdc {
+            return false;
+        }
+
+        if env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::InvoiceContract)
+            .is_some_and(|invoice_contract| issuer == &invoice_contract)
+        {
+            return false;
+        }
+
+        issuer == recorded_issuer
+    }
+
+    /// Previews release of escrowed funds to the issuer without authorizing or
+    /// transferring funds.
+    ///
+    /// The returned amount is read from the active [`EscrowRecord`]. The
+    /// boolean is `true` only when `issuer` passes the same structural checks
+    /// as [`Self::release_to_issuer`], including matching the recorded issuer
+    /// and not being the escrow, pool, USDC, or configured invoice contract.
+    /// Missing or uninitialized state returns `(0, false)`.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `invoice_id` - The invoice whose escrow release is being previewed.
+    /// * `issuer` - The proposed recipient address.
+    ///
+    /// # Auth
+    /// None. This is a read-only view.
+    ///
+    /// # Returns
+    /// * `(u128, bool)` - The locked amount and whether the proposed recipient
+    ///   is structurally valid.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let (amount, valid) = client.preview_release_to_issuer(&invoice_id, &issuer);
+    /// ```
+    pub fn preview_release_to_issuer(
+        env: Env,
+        invoice_id: BytesN<32>,
+        issuer: Address,
+    ) -> (u128, bool) {
+        let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<_, EscrowRecord>(&DataKey::Locked(invoice_id))
+        else {
+            return (0, false);
+        };
+
+        let Some(pool) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PoolContract)
+        else {
+            return (record.amount, false);
+        };
+        let Some(usdc) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::UsdcAsset)
+        else {
+            return (record.amount, false);
+        };
+
+        let valid = Self::release_recipient_is_valid(&env, &pool, &usdc, &issuer, &record.issuer);
+        (record.amount, valid)
+    }
+
     /// Releases escrowed funds to the issuer.
     ///
     /// Wired into `PoolContract::fund_invoice` (issue #819): the pool locks
@@ -400,21 +480,7 @@ impl EscrowContract {
     pub fn release_to_issuer(env: Env, invoice_id: BytesN<32>, issuer: Address) -> bool {
         require_not_paused(&env);
         let pool = Self::require_pool_auth(&env);
-
         let usdc = Self::get_usdc_asset(env.clone());
-        if issuer == env.current_contract_address() || issuer == pool || issuer == usdc {
-            panic_with_error!(&env, EscrowError::InvalidRecipient);
-        }
-
-        if let Some(invoice_contract) = env
-            .storage()
-            .instance()
-            .get::<_, Address>(&DataKey::InvoiceContract)
-        {
-            if issuer == invoice_contract {
-                panic_with_error!(&env, EscrowError::InvalidRecipient);
-            }
-        }
 
         let key = DataKey::Locked(invoice_id.clone());
         let record: EscrowRecord = env
@@ -424,7 +490,7 @@ impl EscrowContract {
             .unwrap_or_else(|| panic_with_error!(&env, EscrowError::NotFound));
 
         let recorded_issuer = record.issuer.clone();
-        if issuer != recorded_issuer {
+        if !Self::release_recipient_is_valid(&env, &pool, &usdc, &issuer, &recorded_issuer) {
             panic_with_error!(&env, EscrowError::InvalidRecipient);
         }
 

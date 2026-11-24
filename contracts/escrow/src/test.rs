@@ -685,6 +685,110 @@ fn test_lock_only_callable_by_pool() {
 }
 
 // ============================================================================
+// Release-to-Issuer Preview Tests
+
+#[test]
+fn test_preview_release_to_issuer_returns_amount_and_valid_recipient() {
+    let (env, client, _admin, _pool, issuer, _usdc_id) = setup();
+    let invoice_id = generate_invoice_id(&env, 1);
+    let amount = 2_500u128;
+    client.lock(&invoice_id, &amount, &issuer);
+
+    let before = env.as_contract(&client.address, || {
+        (
+            env.storage()
+                .persistent()
+                .has(&DataKey::Locked(invoice_id.clone())),
+            env.storage()
+                .persistent()
+                .get::<_, EscrowRecord>(&DataKey::Locked(invoice_id.clone())),
+        )
+    });
+
+    assert_eq!(
+        client.preview_release_to_issuer(&invoice_id, &issuer),
+        (amount, true)
+    );
+
+    let after = env.as_contract(&client.address, || {
+        (
+            env.storage()
+                .persistent()
+                .has(&DataKey::Locked(invoice_id.clone())),
+            env.storage()
+                .persistent()
+                .get::<_, EscrowRecord>(&DataKey::Locked(invoice_id)),
+        )
+    });
+    assert_eq!(before.0, after.0);
+    let (Some(before_record), Some(after_record)) = (before.1, after.1) else {
+        panic!("preview must not remove the lock record");
+    };
+    assert_eq!(before_record.invoice_id, after_record.invoice_id);
+    assert_eq!(before_record.amount, after_record.amount);
+    assert_eq!(before_record.locked_at, after_record.locked_at);
+    assert_eq!(before_record.issuer, after_record.issuer);
+}
+
+#[test]
+fn test_preview_release_to_issuer_rejects_invalid_recipients() {
+    let (env, client, _admin, pool, issuer, usdc_id) = setup();
+    let invoice_id = generate_invoice_id(&env, 2);
+    client.lock(&invoice_id, &1_000, &issuer);
+
+    let wrong_issuer = Address::generate(&env);
+    let invoice_contract = Address::generate(&env);
+    client.set_invoice_contract(&invoice_contract);
+    assert_eq!(
+        client.preview_release_to_issuer(&invoice_id, &wrong_issuer),
+        (1_000, false)
+    );
+    assert_eq!(
+        client.preview_release_to_issuer(&invoice_id, &pool),
+        (1_000, false)
+    );
+    assert_eq!(
+        client.preview_release_to_issuer(&invoice_id, &usdc_id),
+        (1_000, false)
+    );
+    assert_eq!(
+        client.preview_release_to_issuer(&invoice_id, &client.address),
+        (1_000, false)
+    );
+    assert_eq!(
+        client.preview_release_to_issuer(&invoice_id, &invoice_contract),
+        (1_000, false)
+    );
+}
+
+#[test]
+fn test_preview_release_to_issuer_missing_lock_returns_zero_and_false() {
+    let (env, client, _admin, _pool, issuer, _usdc_id) = setup();
+    let invoice_id = generate_invoice_id(&env, 3);
+
+    assert_eq!(
+        client.preview_release_to_issuer(&invoice_id, &issuer),
+        (0, false)
+    );
+    let record_exists = env.as_contract(&client.address, || {
+        env.storage().persistent().has(&DataKey::Locked(invoice_id))
+    });
+    assert!(!record_exists);
+}
+
+#[test]
+fn test_preview_release_to_issuer_preserves_max_amount() {
+    let (env, client, _admin, _pool, issuer, _usdc_id) = setup();
+    let invoice_id = generate_invoice_id(&env, 4);
+    let amount = i128::MAX as u128;
+    client.lock(&invoice_id, &amount, &issuer);
+
+    assert_eq!(
+        client.preview_release_to_issuer(&invoice_id, &issuer),
+        (amount, true)
+    );
+}
+
 // Release to Issuer Tests
 // ============================================================================
 
